@@ -1,0 +1,60 @@
+{
+  "expo": {
+    "name": "NHAI Liveness Detection",
+    "slug": "mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/nhai_logo.jpg",
+    "scheme": "mobile",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/nhai_logo.jpg",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "NHAI Liveness Detection uses your camera to verify identity through facial liveness analysis.",
+        "NSMicrophoneUsageDescription": "Microphone access may be requested by the camera system."
+      }
+    },
+    "android": {
+      "permissions": [
+        "android.permission.CAMERA"
+      ],
+      "package": "com.tarun_ahuja.mobile"
+    },
+    "web": {
+      "favicon": "./assets/images/nhai_logo.jpg"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "NHAI Liveness Detection uses your camera to verify identity through facial liveness analysis.",
+          "microphonePermission": "Microphone access may be requested by the camera system.",
+          "recordAudioAndroid": false
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "39e226c3-03d7-4f16-9491-1e7d46be021e"
+      }
+    }
+  }
+}
