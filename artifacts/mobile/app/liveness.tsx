@@ -17,6 +17,13 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { Asset } from "expo-asset";
+import * as FileSystem from "expo-file-system/legacy";
+import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
+import base64 from "base64-js";
+import jpeg from "jpeg-js";
+import * as ort from "onnxruntime-react-native";
+
 import { useColors } from "@/hooks/useColors";
 import { encryptEmbeddings, decryptEmbeddings, cosineSimilarity } from "@/constants/vault";
 import {
@@ -122,6 +129,453 @@ async function sha256(input: string): Promise<string> {
   return SHA256(input).toString();
 }
 
+let recognizerSession: ort.InferenceSession | null = null;
+let detectorSession: ort.InferenceSession | null = null;
+let moireSession: ort.InferenceSession | null = null;
+
+async function getModelPath(assetName: string, destFileName: string): Promise<string> {
+  let asset;
+  if (destFileName === "face_model_quant.onnx") {
+    asset = Asset.fromModule(require("../assets/face_model_quant.onnx"));
+  } else if (destFileName === "moire.onnx") {
+    asset = Asset.fromModule(require("../assets/moire.onnx"));
+  } else {
+    asset = Asset.fromModule(require("../assets/detector.onnx"));
+  }
+  await asset.downloadAsync();
+  
+  const modelDir = `${FileSystem.documentDirectory}models/`;
+  const infoDir = await FileSystem.getInfoAsync(modelDir);
+  if (!infoDir.exists) {
+    await FileSystem.makeDirectoryAsync(modelDir, { intermediates: true });
+  }
+  
+  const modelPath = `${modelDir}${destFileName}`;
+  const infoFile = await FileSystem.getInfoAsync(modelPath);
+  if (!infoFile.exists) {
+    if (asset.localUri) {
+      await FileSystem.copyAsync({ from: asset.localUri, to: modelPath });
+    } else {
+      throw new Error(`Could not load local model URI for ${destFileName}`);
+    }
+  }
+  return modelPath;
+}
+
+async function loadRecognizerModel(): Promise<ort.InferenceSession> {
+  if (recognizerSession) return recognizerSession;
+  console.log("Loading recognizer model...");
+  const path = await getModelPath("face_model_quant.onnx", "face_model_quant.onnx");
+  recognizerSession = await ort.InferenceSession.create(path);
+  console.log("Recognizer model loaded successfully!");
+  return recognizerSession;
+}
+
+async function loadDetectorModel(): Promise<ort.InferenceSession> {
+  if (detectorSession) return detectorSession;
+  console.log("Loading detector model...");
+  const path = await getModelPath("detector.onnx", "detector.onnx");
+  detectorSession = await ort.InferenceSession.create(path);
+  console.log("Detector model loaded successfully!");
+  return detectorSession;
+}
+
+async function loadMoireModel(): Promise<ort.InferenceSession> {
+  if (moireSession) return moireSession;
+  console.log("Loading moire model...");
+  const path = await getModelPath("moire.onnx", "moire.onnx");
+  moireSession = await ort.InferenceSession.create(path);
+  console.log("Moire model loaded successfully!");
+  return moireSession;
+}
+
+const DETECTION_WIDTH = 320;
+const DETECTION_HEIGHT = 240;
+
+const minBoxes = [
+  [10, 16, 24],
+  [32, 48],
+  [64, 96],
+  [128, 192, 256]
+];
+
+const featureMaps = [
+  [40, 20, 10, 5],
+  [30, 15, 8, 4]
+];
+
+const shrinkages = [
+  [8, 16, 32, 64],
+  [8, 16, 30, 60]
+];
+
+const anchors = (() => {
+  const priors: number[][] = [];
+  const numLayers = featureMaps[0].length;
+  
+  for (let index = 0; index < numLayers; index++) {
+    const scaleW = DETECTION_WIDTH / shrinkages[0][index];
+    const scaleH = DETECTION_HEIGHT / shrinkages[1][index];
+    const featureH = featureMaps[1][index];
+    const featureW = featureMaps[0][index];
+    
+    for (let j = 0; j < featureH; j++) {
+      for (let i = 0; i < featureW; i++) {
+        const xCenter = (i + 0.5) / scaleW;
+        const yCenter = (j + 0.5) / scaleH;
+        
+        for (const minBox of minBoxes[index]) {
+          const w = minBox / DETECTION_WIDTH;
+          const h = minBox / DETECTION_HEIGHT;
+          priors.push([
+            xCenter,
+            yCenter,
+            w,
+            h
+          ]);
+        }
+      }
+    }
+  }
+  
+  for (let i = 0; i < priors.length; i++) {
+    for (let j = 0; j < 4; j++) {
+      if (priors[i][j] < 0) priors[i][j] = 0;
+      if (priors[i][j] > 1) priors[i][j] = 1;
+    }
+  }
+  return priors;
+})();
+
+interface FaceDetection {
+  box: [number, number, number, number];
+  score: number;
+}
+
+function decodeBoxes(
+  locations: Float32Array,
+  scores: Float32Array,
+  scoreThreshold = 0.70
+): FaceDetection[] {
+  const candidates: FaceDetection[] = [];
+  const numPriors = anchors.length;
+  
+  const centerVariance = 0.1;
+  const sizeVariance = 0.2;
+  
+  for (let i = 0; i < numPriors; i++) {
+    const scoreFace = scores[i * 2 + 1];
+    
+    if (scoreFace >= scoreThreshold) {
+      const locIdx = i * 4;
+      const prior = anchors[i];
+      
+      const predCx = locations[locIdx];
+      const predCy = locations[locIdx + 1];
+      const predW = locations[locIdx + 2];
+      const predH = locations[locIdx + 3];
+      
+      const cx = predCx * centerVariance * prior[2] + prior[0];
+      const cy = predCy * centerVariance * prior[3] + prior[1];
+      const w = Math.exp(predW * sizeVariance) * prior[2];
+      const h = Math.exp(predH * sizeVariance) * prior[3];
+      
+      const xmin = Math.max(0, cx - w / 2);
+      const ymin = Math.max(0, cy - h / 2);
+      const xmax = Math.min(1.0, cx + w / 2);
+      const ymax = Math.min(1.0, cy + h / 2);
+      
+      candidates.push({
+        box: [xmin, ymin, xmax, ymax],
+        score: scoreFace
+      });
+    }
+  }
+  return candidates;
+}
+
+function iou(boxA: [number, number, number, number], boxB: [number, number, number, number]): number {
+  const xA = Math.max(boxA[0], boxB[0]);
+  const yA = Math.max(boxA[1], boxB[1]);
+  const xB = Math.min(boxA[2], boxB[2]);
+  const yB = Math.min(boxA[3], boxB[3]);
+  
+  const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+  if (interArea === 0) return 0;
+  
+  const boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1]);
+  const boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1]);
+  
+  return interArea / (boxAArea + boxBArea - interArea);
+}
+
+function nonMaxSuppression(candidates: FaceDetection[], iouThreshold = 0.3): FaceDetection[] {
+  candidates.sort((a, b) => b.score - a.score);
+  const selected: FaceDetection[] = [];
+  
+  while (candidates.length > 0) {
+    const current = candidates.shift()!;
+    selected.push(current);
+    
+    candidates = candidates.filter(item => {
+      const overlap = iou(current.box, item.box);
+      return overlap <= iouThreshold;
+    });
+  }
+  
+  return selected;
+}
+
+async function captureAndValidateFace(cameraRef: React.RefObject<CameraView | null>): Promise<number[]> {
+  if (Platform.OS === "web") {
+    throw new Error("ONNX model running locally is only supported on native phone apps.");
+  }
+
+  if (!cameraRef.current) {
+    throw new Error("Camera view reference is null");
+  }
+  
+  const detector = await loadDetectorModel();
+  const recognizer = await loadRecognizerModel();
+  const moireModel = await loadMoireModel();
+  
+  console.log("Capturing photo...");
+  const photo = await cameraRef.current.takePictureAsync({
+    skipProcessing: true,
+  });
+  if (!photo || !photo.uri) {
+    throw new Error("Failed to capture photo from CameraView");
+  }
+  console.log(`Captured photo resolution: ${photo.width}x${photo.height}`);
+  
+  console.log("Resizing photo to 320x240 for detection...");
+  const detectorManip = await manipulateAsync(
+    photo.uri,
+    [
+      {
+        resize: {
+          width: 320,
+          height: 240,
+        },
+      },
+    ],
+    { compress: 0.9, format: SaveFormat.JPEG, base64: true }
+  );
+  
+  if (!detectorManip.base64) {
+    throw new Error("Failed to resize and get base64 data for detection");
+  }
+  
+  const detectorJpegData = base64.toByteArray(detectorManip.base64);
+  const detectorRawImage = jpeg.decode(detectorJpegData, { useTArray: true });
+  
+  const numDetectorPixels = 320 * 240;
+  const detectorFloatData = new Float32Array(3 * numDetectorPixels);
+  const rOffsetD = 0;
+  const gOffsetD = numDetectorPixels;
+  const bOffsetD = 2 * numDetectorPixels;
+  const detectorData = detectorRawImage.data;
+  
+  for (let i = 0; i < numDetectorPixels; i++) {
+    const r = detectorData[i * 4];
+    const g = detectorData[i * 4 + 1];
+    const b = detectorData[i * 4 + 2];
+    
+    detectorFloatData[rOffsetD + i] = (r - 127.0) / 128.0;
+    detectorFloatData[gOffsetD + i] = (g - 127.0) / 128.0;
+    detectorFloatData[bOffsetD + i] = (b - 127.0) / 128.0;
+  }
+  
+  console.log("Running local ONNX face detection...");
+  const detectorInput = new ort.Tensor("float32", detectorFloatData, [1, 3, 240, 320]);
+  const detectorOutputs = await detector.run({ "input": detectorInput });
+  
+  const rawScores = detectorOutputs["scores"];
+  const rawBoxes = detectorOutputs["boxes"];
+  
+  if (!rawScores || !rawBoxes) {
+    throw new Error("Face detector returned invalid outputs");
+  }
+  
+  const scoreThreshold = 0.70;
+  const candidates = decodeBoxes(
+    rawBoxes.data as Float32Array,
+    rawScores.data as Float32Array,
+    scoreThreshold
+  );
+  
+  const detections = nonMaxSuppression(candidates, 0.3);
+  console.log(`Detected faces count: ${detections.length}`);
+  
+  if (detections.length === 0) {
+    Alert.alert("Face Detection Error", "No face detected. Please position your face clearly inside the camera box.");
+    throw new Error("No face detected");
+  }
+  if (detections.length > 1) {
+    Alert.alert("Face Detection Error", "Multiple faces detected. Please make sure only one person is in the camera frame.");
+    throw new Error("Multiple faces detected");
+  }
+  
+  const face = detections[0];
+  const [xmin, ymin, xmax, ymax] = face.box;
+  const faceWidth = xmax - xmin;
+  const faceHeight = ymax - ymin;
+  
+  console.log(`Detected face relative size: ${faceWidth.toFixed(3)}x${faceHeight.toFixed(3)}`);
+  
+  if (faceWidth > 0.7 || faceHeight > 0.7) {
+    Alert.alert("Positioning Error", "Please move your face slightly further away from the screen.");
+    throw new Error("Face is too close to camera");
+  }
+  
+  // ── Run Moiré / spoof detection ──
+  const w = xmax - xmin;
+  const h = ymax - ymin;
+  const maxDim = Math.max(w, h);
+  const centerX = xmin + w / 2;
+  const centerY = ymin + h / 2;
+  const expansionFactor = 1.5;
+
+  const moireCropX = Math.max(0, Math.floor((centerX - (maxDim * expansionFactor) / 2) * photo.width));
+  const moireCropY = Math.max(0, Math.floor((centerY - (maxDim * expansionFactor) / 2) * photo.height));
+  const moireCropW = Math.min(photo.width - moireCropX, Math.ceil(maxDim * expansionFactor * photo.width));
+  const moireCropH = Math.min(photo.height - moireCropY, Math.ceil(maxDim * expansionFactor * photo.height));
+
+  console.log(`Cropping expanded face region for Moiré detection: x=${moireCropX}, y=${moireCropY}, w=${moireCropW}, h=${moireCropH}`);
+  const moireManip = await manipulateAsync(
+    photo.uri,
+    [
+      {
+        crop: {
+          originX: moireCropX,
+          originY: moireCropY,
+          width: moireCropW,
+          height: moireCropH,
+        },
+      },
+      {
+        resize: {
+          width: 128,
+          height: 128,
+        },
+      },
+    ],
+    { compress: 0.9, format: SaveFormat.JPEG, base64: true }
+  );
+
+  if (!moireManip.base64) {
+    throw new Error("Failed to crop and base64 encode face image for Moiré detection");
+  }
+
+  const moireJpegData = base64.toByteArray(moireManip.base64);
+  const moireRawImage = jpeg.decode(moireJpegData, { useTArray: true });
+
+  const numMoirePixels = 128 * 128;
+  const moireFloatData = new Float32Array(3 * numMoirePixels);
+  const rOffsetM = 0;
+  const gOffsetM = numMoirePixels;
+  const bOffsetM = 2 * numMoirePixels;
+  const moireData = moireRawImage.data;
+
+  for (let i = 0; i < numMoirePixels; i++) {
+    const r = moireData[i * 4];
+    const g = moireData[i * 4 + 1];
+    const b = moireData[i * 4 + 2];
+
+    moireFloatData[rOffsetM + i] = r / 255.0;
+    moireFloatData[gOffsetM + i] = g / 255.0;
+    moireFloatData[bOffsetM + i] = b / 255.0;
+  }
+
+  console.log("Running local ONNX Moiré / spoof detection...");
+  const moireInput = new ort.Tensor("float32", moireFloatData, [1, 3, 128, 128]);
+  const moireOutputs = await moireModel.run({ "input": moireInput });
+  const moireOutputTensor = moireOutputs["output"];
+
+  if (!moireOutputTensor) {
+    throw new Error("output tensor not found in Moiré model outputs");
+  }
+
+  const logits = moireOutputTensor.data as Float32Array;
+  const realLogit = logits[0];
+  const spoofLogit = logits[1];
+  const logitDiff = realLogit - spoofLogit;
+
+  console.log(`Moiré results - real: ${realLogit.toFixed(4)}, spoof: ${spoofLogit.toFixed(4)}, diff: ${logitDiff.toFixed(4)}`);
+
+  if (logitDiff < 0) {
+    Alert.alert(
+      "Liveness Verification Failed",
+      "Screen spoofing or Moiré pattern detected. Please scan a real face."
+    );
+    throw new Error("Screen spoofing or Moiré pattern detected");
+  }
+  
+  console.log("Cropping face region from original photo...");
+  const cropX = Math.max(0, Math.floor(xmin * photo.width));
+  const cropY = Math.max(0, Math.floor(ymin * photo.height));
+  const cropW = Math.min(photo.width - cropX, Math.ceil((xmax - xmin) * photo.width));
+  const cropH = Math.min(photo.height - cropY, Math.ceil((ymax - ymin) * photo.height));
+  
+  const faceManip = await manipulateAsync(
+    photo.uri,
+    [
+      {
+        crop: {
+          originX: cropX,
+          originY: cropY,
+          width: cropW,
+          height: cropH,
+        },
+      },
+      {
+        resize: {
+          width: 112,
+          height: 112,
+        },
+      },
+    ],
+    { compress: 0.9, format: SaveFormat.JPEG, base64: true }
+  );
+  
+  if (!faceManip.base64) {
+    throw new Error("Failed to crop and base64 encode face image");
+  }
+  
+  const faceJpegData = base64.toByteArray(faceManip.base64);
+  const faceRawImage = jpeg.decode(faceJpegData, { useTArray: true });
+  
+  const numRecognizerPixels = 112 * 112;
+  const recognizerFloatData = new Float32Array(3 * numRecognizerPixels);
+  const rOffsetR = 0;
+  const gOffsetR = numRecognizerPixels;
+  const bOffsetR = 2 * numRecognizerPixels;
+  const faceData = faceRawImage.data;
+  
+  for (let i = 0; i < numRecognizerPixels; i++) {
+    const r = faceData[i * 4];
+    const g = faceData[i * 4 + 1];
+    const b = faceData[i * 4 + 2];
+    
+    recognizerFloatData[rOffsetR + i] = (r - 127.5) / 127.5;
+    recognizerFloatData[gOffsetR + i] = (g - 127.5) / 127.5;
+    recognizerFloatData[bOffsetR + i] = (b - 127.5) / 127.5;
+  }
+  
+  console.log("Running local ONNX face recognition...");
+  const recognizerInput = new ort.Tensor("float32", recognizerFloatData, [1, 3, 112, 112]);
+  const recognizerOutputs = await recognizer.run({ "input_image": recognizerInput });
+  const embeddingsTensor = recognizerOutputs["embeddings"];
+  
+  if (!embeddingsTensor) {
+    throw new Error("embeddings output tensor not found in model outputs");
+  }
+  
+  const embedding = Array.from(embeddingsTensor.data as Float32Array);
+  console.log("Recognition completed! Generated 512-dim embedding.");
+  return embedding;
+}
+
 export default function LivenessScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -169,6 +623,16 @@ export default function LivenessScreen() {
   const faceLoopY = useRef<Animated.CompositeAnimation | null>(null);
   const permissionRequested = useRef(false);
   const faceDetectedRef = useRef(false);
+  const cameraRef = useRef<CameraView>(null);
+
+  // Load ONNX model on mount
+  useEffect(() => {
+    if (Platform.OS !== "web") {
+      Promise.all([loadDetectorModel(), loadRecognizerModel(), loadMoireModel()]).catch((err: any) => {
+        console.error("Failed to pre-load ONNX models on mount:", err);
+      });
+    }
+  }, []);
 
   // Keep ref in sync with state so timers can read latest value
   useEffect(() => {
@@ -229,7 +693,7 @@ export default function LivenessScreen() {
         }, 1500);
       }
 
-      stageTimer.current = setTimeout(() => {
+      stageTimer.current = setTimeout(async () => {
         if (flashTimer.current) {
           clearInterval(flashTimer.current);
           flashTimer.current = null;
@@ -241,12 +705,22 @@ export default function LivenessScreen() {
 
         const passed = faceDetectedRef.current;
         if (passed) {
-          // ── Collect mock embedding during moiré stage ──────────────────
+          // ── Collect real embedding during moiré stage ──────────────────
           if (stage.key === "moire") {
-            const seed = getDeterministicSeed(employeeId);
-            enrollmentSeedRef.current = seed;
-            const embedding = generateMockEmbedding(seed, true);
-            embeddingSamples.current.push(embedding);
+            try {
+              const embedding = await captureAndValidateFace(cameraRef);
+              embeddingSamples.current.push(embedding);
+            } catch (err: any) {
+              console.error("Error capturing/validating face:", err);
+              setStagePhase("failed");
+              setBoxPassed(false);
+              setHasFailed(true);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+              setTimeout(() => {
+                runStage(idx);
+              }, 2000);
+              return;
+            }
           }
 
           setStagePhase("passed");
@@ -288,10 +762,21 @@ export default function LivenessScreen() {
 
       if (mode === "enroll") {
         // ── ENROLLMENT MODE ────────────────────────────────────────────
-        // Generate additional samples to reach 5-10 photos
-        const baseSeed = getDeterministicSeed(employeeId);
+        // Generate additional samples to reach 5-10 photos based on the real embedding
+        const realEmb = embeddingSamples.current[0];
         while (embeddingSamples.current.length < 5) {
-          embeddingSamples.current.push(generateMockEmbedding(baseSeed, true));
+          if (realEmb) {
+            // Add small noise to simulate variance
+            const noisyEmb = realEmb.map((v) => {
+              const noise = (Math.random() * 0.02) - 0.01; // ±1% noise
+              return v + noise;
+            });
+            const norm = Math.sqrt(noisyEmb.reduce((s, v) => s + v * v, 0));
+            embeddingSamples.current.push(noisyEmb.map((v) => v / (norm || 1)));
+          } else {
+            const baseSeed = getDeterministicSeed(employeeId);
+            embeddingSamples.current.push(generateMockEmbedding(baseSeed, true));
+          }
         }
 
         const samples = embeddingSamples.current;
@@ -553,6 +1038,7 @@ export default function LivenessScreen() {
   return (
     <View style={styles.container}>
       <CameraView
+        ref={cameraRef}
         style={StyleSheet.absoluteFill}
         facing="front"
       />

@@ -17,4 +17,6 @@ config.resolver.blockList = [
   ...((config.resolver && config.resolver.blockList) || []),
 ];
 
+config.resolver.assetExts.push("onnx");
+
 module.exports = config;
