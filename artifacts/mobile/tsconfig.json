@@ -5,6 +5,7 @@
     "tsBuildInfoFile": ".tsbuildinfo",
     "baseUrl": ".",
     "strict": true,
+    "moduleResolution": "bundler",
     "paths": {
       "@/*": [
         "./*"

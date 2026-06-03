@@ -1,11 +1,13 @@
 "use no memo";
 import { Feather } from "@expo/vector-icons";
+import { SHA256 } from "crypto-js";
 import * as Haptics from "expo-haptics";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { LinearGradient } from "expo-linear-gradient";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Alert,
   Animated,
   Dimensions,
   Platform,
@@ -16,6 +18,13 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useColors } from "@/hooks/useColors";
+import { encryptEmbeddings, decryptEmbeddings, cosineSimilarity } from "@/constants/vault";
+import {
+  enrollEmployeeLocal,
+  getEnrolledEmployeeLocal,
+  saveAttendanceLocal,
+  getLatestAttendanceHashLocal,
+} from "@/constants/localDb";
 
 const { width: SW, height: SH } = Dimensions.get("window");
 
@@ -69,10 +78,64 @@ const STAGES = [
   },
 ];
 
+/**
+ * Generates a deterministic seed from a string (such as the employee ID).
+ */
+export function getDeterministicSeed(employeeId: string): number {
+  let hash = 0;
+  const cleanId = employeeId.trim().toLowerCase();
+  for (let i = 0; i < cleanId.length; i++) {
+    hash = (hash << 5) - hash + cleanId.charCodeAt(i);
+    hash |= 0; // Convert to 32-bit integer
+  }
+  return Math.abs(hash) || 42;
+}
+
+/**
+ * Generates a deterministic-looking mock embedding vector (512 floats).
+ * In production this would come from the ML model during the Moiré frame capture.
+ * If addNoise is true, small random variance is added to simulate biometric changes.
+ */
+function generateMockEmbedding(seed: number, addNoise = false): number[] {
+  const vec: number[] = [];
+  let s = seed;
+  for (let i = 0; i < 512; i++) {
+    // Simple PRNG seeded hash for reproducibility
+    s = ((s * 1103515245 + 12345) & 0x7fffffff);
+    let val = (s / 0x7fffffff) * 2 - 1; // values in [-1, 1]
+    if (addNoise) {
+      // Add up to ±8% noise to simulate natural variance in camera feed
+      const noise = (Math.random() * 0.16) - 0.08;
+      val += noise;
+    }
+    vec.push(val);
+  }
+  // Normalize to unit vector
+  const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
+  return vec.map((v) => v / norm);
+}
+
+/**
+ * Compute SHA-256 hash of a string using expo-crypto.
+ */
+async function sha256(input: string): Promise<string> {
+  return SHA256(input).toString();
+}
+
 export default function LivenessScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
+
+  // Route params from home screen
+  const params = useLocalSearchParams<{
+    mode: string;
+    employeeId: string;
+    employeeName: string;
+  }>();
+  const mode = (params.mode as "verify" | "enroll") || "verify";
+  const employeeId = params.employeeId || "";
+  const employeeName = params.employeeName || "";
 
   // ── All state hooks (must be before any early return) ──────────────────────
   const [stageIdx, setStageIdx] = useState(0);
@@ -85,6 +148,11 @@ export default function LivenessScreen() {
   const [flashDir, setFlashDir] = useState<FlashDir>(null);
   const [flashVisible, setFlashVisible] = useState(false);
   const [flashColor, setFlashColor] = useState("rgba(255,255,255,0.95)");
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // Store collected embedding samples (for enrollment: 5-10 samples)
+  const embeddingSamples = useRef<number[][]>([]);
+  const enrollmentSeedRef = useRef<number>(0);
 
   // ── All ref hooks ──────────────────────────────────────────────────────────
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -173,6 +241,14 @@ export default function LivenessScreen() {
 
         const passed = faceDetectedRef.current;
         if (passed) {
+          // ── Collect mock embedding during moiré stage ──────────────────
+          if (stage.key === "moire") {
+            const seed = getDeterministicSeed(employeeId);
+            enrollmentSeedRef.current = seed;
+            const embedding = generateMockEmbedding(seed, true);
+            embeddingSamples.current.push(embedding);
+          }
+
           setStagePhase("passed");
           setBoxPassed(true);
           setHasFailed(false);
@@ -184,7 +260,7 @@ export default function LivenessScreen() {
               runStage(idx + 1);
             } else {
               setStagePhase("done");
-              setTimeout(() => { router.replace("/success"); }, 800);
+              handleAllStagesPassed();
             }
           }, 1500);
         } else {
@@ -198,6 +274,145 @@ export default function LivenessScreen() {
     },
     [flashAnim, faceOffsetX, faceOffsetY, progressAnim]
   );
+
+  // ── Post-liveness biometric processing ─────────────────────────────────────
+  const handleAllStagesPassed = useCallback(async () => {
+    setIsProcessing(true);
+    try {
+      // Ensure we have at least one embedding sample
+      if (embeddingSamples.current.length === 0) {
+        // Generate a fallback sample
+        const seed = getDeterministicSeed(employeeId);
+        embeddingSamples.current.push(generateMockEmbedding(seed, true));
+      }
+
+      if (mode === "enroll") {
+        // ── ENROLLMENT MODE ────────────────────────────────────────────
+        // Generate additional samples to reach 5-10 photos
+        const baseSeed = getDeterministicSeed(employeeId);
+        while (embeddingSamples.current.length < 5) {
+          embeddingSamples.current.push(generateMockEmbedding(baseSeed, true));
+        }
+
+        const samples = embeddingSamples.current;
+
+        // Verify pairwise cosine similarity >= 0.6
+        for (let i = 0; i < samples.length; i++) {
+          for (let j = i + 1; j < samples.length; j++) {
+            const sim = cosineSimilarity(samples[i], samples[j]);
+            if (sim < 0.6) {
+              Alert.alert(
+                "Enrollment Failed",
+                `Inconsistent face captures detected (similarity ${sim.toFixed(2)}). Please try again in better lighting.`
+              );
+              router.replace("/failure");
+              return;
+            }
+          }
+        }
+
+        // Average the vectors and normalize
+        const dim = samples[0].length;
+        const avgVec = new Array(dim).fill(0);
+        for (const sample of samples) {
+          for (let i = 0; i < dim; i++) {
+            avgVec[i] += sample[i];
+          }
+        }
+        for (let i = 0; i < dim; i++) {
+          avgVec[i] /= samples.length;
+        }
+        const norm = Math.sqrt(avgVec.reduce((s: number, v: number) => s + v * v, 0));
+        for (let i = 0; i < dim; i++) {
+          avgVec[i] /= norm;
+        }
+
+        // Encrypt and store in local SQLite
+        const encryptedHex = await encryptEmbeddings(avgVec);
+        await enrollEmployeeLocal(employeeId, employeeName, encryptedHex);
+
+        setTimeout(() => {
+          router.replace({
+            pathname: "/success",
+            params: { message: `Employee ${employeeId} enrolled successfully. Biometrics encrypted and stored locally.` },
+          });
+        }, 400);
+
+      } else {
+        // ── VERIFICATION MODE ──────────────────────────────────────────
+        const enrolled = await getEnrolledEmployeeLocal(employeeId);
+        if (!enrolled) {
+          Alert.alert(
+            "Not Enrolled",
+            `Employee ${employeeId} is not registered on this device. Please enroll first.`
+          );
+          router.replace("/failure");
+          return;
+        }
+
+        if (enrolled.encrypted_embeddings === "SECURELY_CLEARED") {
+          Alert.alert(
+            "Biometrics Cleared",
+            `Biometrics for Employee ${employeeId} have been synced and cleared from this device for security. Re-enrollment is required for offline verification.`
+          );
+          router.replace("/failure");
+          return;
+        }
+
+        // Decrypt enrolled embeddings
+        const enrolledEmbeddings = await decryptEmbeddings(enrolled.encrypted_embeddings);
+        const capturedEmbedding = embeddingSamples.current[embeddingSamples.current.length - 1];
+
+        // Cosine similarity check
+        const similarity = cosineSimilarity(capturedEmbedding, enrolledEmbeddings);
+        const THRESHOLD = 0.6;
+
+        if (similarity < THRESHOLD) {
+          Alert.alert(
+            "Verification Failed",
+            `Face does not match enrolled biometrics (score: ${similarity.toFixed(2)}).`
+          );
+          router.replace("/failure");
+          return;
+        }
+
+        // ── Build blockchain-lite chained attendance record ────────────
+        const embeddingHash = await sha256(JSON.stringify(capturedEmbedding));
+        const prevHash = await getLatestAttendanceHashLocal();
+        const timestamp = Date.now();
+        const gps = "28.6139,77.2090"; // Placeholder — would come from expo-location
+        const livenessScore = similarity;
+
+        // Chain: hash(prevHash + employeeId + timestamp + embeddingHash)
+        const chainInput = `${prevHash}|${employeeId}|${timestamp}|${embeddingHash}`;
+        const recordHash = await sha256(chainInput);
+
+        await saveAttendanceLocal(
+          employeeId,
+          gps,
+          livenessScore,
+          embeddingHash,
+          recordHash
+        );
+
+        setTimeout(() => {
+          router.replace({
+            pathname: "/success",
+            params: {
+              message: `Employee ${employeeId} verified (score: ${similarity.toFixed(2)}). Attendance recorded and hash-chained.`,
+            },
+          });
+        }, 400);
+      }
+    } catch (err: any) {
+      console.error("Biometric processing error:", err);
+      Alert.alert("Error", err.message || "Failed to process biometric data.");
+      router.replace("/failure");
+    } finally {
+      setIsProcessing(false);
+      embeddingSamples.current = [];
+    }
+  }, [mode, employeeId, employeeName]);
 
   const handleFacesDetected = useCallback(() => {
     setFaceDetected(true);
@@ -462,7 +677,11 @@ export default function LivenessScreen() {
       >
         <Text style={styles.bottomFeatureName}>{stage.title}</Text>
         <Text style={styles.holdText}>
-          HOLD STILL · KEEP FACE WITHIN THE FRAME
+          {isProcessing
+            ? "PROCESSING BIOMETRICS…"
+            : mode === "enroll"
+              ? `ENROLLING ${employeeId} · HOLD STILL`
+              : `VERIFYING ${employeeId} · HOLD STILL`}
         </Text>
       </View>
     </View>

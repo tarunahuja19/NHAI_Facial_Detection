@@ -4,10 +4,13 @@
     "slug": "mobile",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/images/nhai_logo.jpg",
     "scheme": "mobile",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
+      "image": "./assets/images/nhai_logo.jpg",
+      "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
     "ios": {
@@ -42,7 +45,9 @@
           "microphonePermission": "Microphone access may be requested by the camera system.",
           "recordAudioAndroid": false
         }
-      ]
+      ],
+      "expo-secure-store",
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true,
