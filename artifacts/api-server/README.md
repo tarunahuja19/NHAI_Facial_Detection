@@ -1,25 +1,63 @@
-# Backend API Server (`@workspace/api-server`)
+# 🖥️ NHAI Backend API Server (`@workspace/api-server`)
 
-This folder contains the central synchronization and backend server for the NHAI Facial Detection & Attendance system. It is built using Node.js, Express, TypeScript, and Drizzle ORM, with build bundling managed via `esbuild`.
-
----
-
-## 🚀 Key Features
-
-* **Biometric Enrollment Merging**: Resolves conflicts when syncing face templates by average-merging 512-dimensional vector embeddings, re-normalizing to unit length, and storing them in the PostgreSQL database.
-* **Blockchain-lite Integrity**: Validates the cryptographic hash chain of offline attendance logs. Any tampered or out-of-order records automatically reject synchronization to prevent spoofing of logs.
-* **Security Hardening**:
-  * Strips framework fingerprint headers (`X-Powered-By`).
-  * Injects security headers on every response (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection`, `Referrer-Policy`).
-  * Enforces a `15MB` request body limit to mitigate memory exhaustion DoS attacks.
-* **Structured Logging**: Employs Pino and `pino-http` logging for high-performance JSON log output, coupled with `pino-pretty` formatting in development.
+This package houses the central TypeScript API server responsible for receiving attendance logs, verifying biometric authenticity, handling client registration conflict resolutions, and maintaining the master PostgreSQL attendance ledger.
 
 ---
 
-## 📡 API Endpoints
+## 📂 Navigation & File Structure
+
+```
+├── src/
+│   ├── index.ts               # Entrypoint (Boots Express server and binds to port)
+│   ├── app.ts                 # Express application initialization & middleware stacks
+│   ├── lib/
+│   │   └── logger.ts          # Pino logger config for high-speed JSON output
+│   ├── middlewares/           # Core request interceptors
+│   └── routes/
+│       ├── index.ts           # Central router registering sub-routes
+│       ├── health.ts          # Endpoint checking DB/server status (/healthz)
+│       └── sync.ts            # Synchronization handler (/sync)
+├── build.mjs                  # ESBuild script compilation schema
+├── package.json               # Package commands & dependency listing
+└── tsconfig.json              # TypeScript compilation rules
+```
+
+---
+
+## ⚙️ Core Technical Capabilities
+
+### 🛡️ 1. Hardened API Security Middleware
+To protect governmental employee logs, the server enforces structural hardening in [`src/app.ts`](file:///home/jemin/Desktop/Code/nhai-app/artifacts/api-server/src/app.ts):
+* **Express Cloaking**: Strips the default `X-Powered-By` header to prevent scanning scripts from identifying target server technologies.
+* **Manually Injected Security Headers**:
+  * `X-Content-Type-Options: nosniff` (Prevents MIME sniffing attacks).
+  * `X-Frame-Options: DENY` (Mitigates clickjacking overlays).
+  * `X-XSS-Protection: 1; mode=block` (Blocks cross-site scripting page renders).
+  * `Referrer-Policy: no-referrer` (Prevents credential leakages in referrer headers).
+* **Payload Size Constraints**: Enforces a strict `15MB` request body limitation. Since biometric embedding payloads contain raw arrays of floating points, this prevents heap memory depletion/DoS vectors.
+
+### 🧬 2. Average-Merge Biometric Conflict Resolution
+In [`src/routes/sync.ts`](file:///home/jemin/Desktop/Code/nhai-app/artifacts/api-server/src/routes/sync.ts), when an employee re-registers or registers across different plaza devices:
+1. The server checks the existing database template for that employee ID.
+2. If a template exists, it retrieves the previous 512-dimensional vector.
+3. It performs a **Vector Averaging merge**: `merged[i] = (existing[i] + new[i]) / 2`.
+4. It calculates the Euclidean Norm of the merged vector and **re-normalizes it to unit length** (unit length is required for cosine similarity operations on the mobile app).
+5. Updates the template in PostgreSQL. This smooths out camera sensor variances from different capture devices.
+
+### ⛓️ 3. Blockchain-Lite Verification
+To prevent offline database injection:
+1. The client submits a chronological array of attendance records.
+2. The server iterates over each record and computes:
+   `calculatedHash = SHA256(prevHash | employee_id | timestamp | embedding_hash)`
+3. It matches this value against the client's provided `record_hash`.
+4. If there is a mismatch at any index, the server aborts the transaction, returns a `400 Bad Request`, and writes warning logs to Pino.
+
+---
+
+## 📡 API Specs
 
 ### `GET /api/healthz`
-Returns backend health status.
+Health monitor checking backend liveliness.
 * **Response (200)**:
   ```json
   {
@@ -28,60 +66,53 @@ Returns backend health status.
   ```
 
 ### `POST /api/sync`
-Synchronizes locally-logged face enrollments and blockchain-lite attendance records.
-* **Request Body**:
+Synchronizes newly registered profiles and attendance events.
+* **Payload Structure**:
   ```json
   {
     "enrollments": [
       {
-        "employee_id": "EMP123",
-        "name": "Jane Doe",
-        "embeddings": [ /* Array of 512 numbers */ ]
+        "employee_id": "EMP007",
+        "name": "Arjun Singh",
+        "embeddings": [0.012, -0.045, ... 512 floats]
       }
     ],
     "attendance": [
       {
-        "id": 1,
-        "employee_id": "EMP123",
-        "timestamp": 1717520000000,
+        "employee_id": "EMP007",
+        "timestamp": 1780577405000,
         "gps": "28.5355,77.3910",
-        "liveness_score": 0.98,
-        "embedding_hash": "a4f8c...",
-        "record_hash": "c72b8..."
+        "liveness_score": 0.992,
+        "embedding_hash": "e3b0c442...",
+        "record_hash": "8f482a..."
       }
     ]
   }
   ```
-* **Response (200)**:
+* **Success (200)**:
   ```json
   {
     "success": true,
-    "syncedEnrollments": ["EMP123"],
+    "syncedEnrollments": ["EMP007"],
     "syncedAttendance": [1]
   }
   ```
-* **Response (400)**: If the blockchain hash chain validation fails (tampered logs).
-* **Response (500)**: If processing fails.
 
 ---
 
-## 🛠️ Commands
+## 🛠️ Developer Scripts
 
-Run these inside `artifacts/api-server/` or via monorepo workspace filters:
+Run these scripts locally to manage the server:
 
-* **Start Development Mode** (Builds first and runs index):
+* **Local dev start** (Hot builds and starts built file with source maps enabled):
   ```bash
   pnpm run dev
   ```
-* **Compile / Bundle Production App** (via `esbuild`):
+* **Compile production package** (Uses ESBuild and Pinobuild bundle extensions):
   ```bash
   pnpm run build
   ```
-* **Start Compiled App**:
+* **Run static built file**:
   ```bash
   pnpm run start
-  ```
-* **Typecheck TS Files**:
-  ```bash
-  pnpm run typecheck
   ```
