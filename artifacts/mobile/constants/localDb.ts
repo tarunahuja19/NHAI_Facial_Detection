@@ -1,29 +1,34 @@
 import * as SQLite from "expo-sqlite";
 
-const db = SQLite.openDatabaseSync("nhai_liveness.db");
+let _db: SQLite.SQLiteDatabase | null = null;
 
-// Initialize database schema
-db.execSync(`
-  PRAGMA journal_mode = WAL;
+function getDb(): SQLite.SQLiteDatabase {
+  if (!_db) {
+    _db = SQLite.openDatabaseSync("nhai_liveness.db");
+    _db.execSync(`
+      PRAGMA journal_mode = WAL;
 
-  CREATE TABLE IF NOT EXISTS enrolled_employees (
-    employee_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    encrypted_embeddings TEXT NOT NULL,
-    is_synced INTEGER DEFAULT 0
-  );
+      CREATE TABLE IF NOT EXISTS enrolled_employees (
+        employee_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        encrypted_embeddings TEXT NOT NULL,
+        is_synced INTEGER DEFAULT 0
+      );
 
-  CREATE TABLE IF NOT EXISTS offline_attendance (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    employee_id TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    gps TEXT NOT NULL,
-    liveness_score REAL NOT NULL,
-    embedding_hash TEXT NOT NULL,
-    record_hash TEXT NOT NULL,
-    is_synced INTEGER DEFAULT 0
-  );
-`);
+      CREATE TABLE IF NOT EXISTS offline_attendance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        gps TEXT NOT NULL,
+        liveness_score REAL NOT NULL,
+        embedding_hash TEXT NOT NULL,
+        record_hash TEXT NOT NULL,
+        is_synced INTEGER DEFAULT 0
+      );
+    `);
+  }
+  return _db;
+}
 
 export interface EnrolledEmployee {
   employee_id: string;
@@ -51,6 +56,7 @@ export async function enrollEmployeeLocal(
   name: string,
   encryptedEmbeddingsHex: string
 ): Promise<void> {
+  const db = getDb();
   await db.runAsync(
     `INSERT OR REPLACE INTO enrolled_employees (employee_id, name, encrypted_embeddings, is_synced)
      VALUES (?, ?, ?, 0);`,
@@ -64,6 +70,7 @@ export async function enrollEmployeeLocal(
 export async function getEnrolledEmployeeLocal(
   employeeId: string
 ): Promise<EnrolledEmployee | null> {
+  const db = getDb();
   const row = await db.getFirstAsync<EnrolledEmployee>(
     `SELECT * FROM enrolled_employees WHERE employee_id = ?;`,
     [employeeId]
@@ -81,6 +88,7 @@ export async function saveAttendanceLocal(
   embeddingHash: string,
   recordHash: string
 ): Promise<void> {
+  const db = getDb();
   const timestamp = Date.now();
   await db.runAsync(
     `INSERT INTO offline_attendance (employee_id, timestamp, gps, liveness_score, embedding_hash, record_hash, is_synced)
@@ -94,6 +102,7 @@ export async function saveAttendanceLocal(
  * If no entry exists, returns the genesis hash.
  */
 export async function getLatestAttendanceHashLocal(): Promise<string> {
+  const db = getDb();
   const row = await db.getFirstAsync<{ record_hash: string }>(
     `SELECT record_hash FROM offline_attendance ORDER BY id DESC LIMIT 1;`
   );
@@ -107,6 +116,7 @@ export async function getUnsyncedDataLocal(): Promise<{
   enrollments: EnrolledEmployee[];
   attendance: OfflineAttendance[];
 }> {
+  const db = getDb();
   const enrollments = await db.getAllAsync<EnrolledEmployee>(
     `SELECT * FROM enrolled_employees WHERE is_synced = 0;`
   );
@@ -124,6 +134,7 @@ export async function purgeSyncedDataLocal(
   employeeIds: string[],
   attendanceIds: number[]
 ): Promise<void> {
+  const db = getDb();
   if (employeeIds.length > 0) {
     const placeholders = employeeIds.map(() => "?").join(",");
     // Securely clear biometric templates from the device but retain employee record
@@ -151,6 +162,7 @@ export async function purgeSyncedDataLocal(
  * Retrieves all locally enrolled employees.
  */
 export async function getAllEmployeesLocal(): Promise<EnrolledEmployee[]> {
+  const db = getDb();
   return await db.getAllAsync<EnrolledEmployee>(
     `SELECT * FROM enrolled_employees ORDER BY name ASC;`
   );
@@ -160,6 +172,7 @@ export async function getAllEmployeesLocal(): Promise<EnrolledEmployee[]> {
  * Retrieves all locally stored attendance records.
  */
 export async function getAllAttendanceLocal(): Promise<OfflineAttendance[]> {
+  const db = getDb();
   return await db.getAllAsync<OfflineAttendance>(
     `SELECT * FROM offline_attendance ORDER BY timestamp DESC;`
   );
