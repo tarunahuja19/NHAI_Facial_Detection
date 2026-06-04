@@ -1,76 +1,77 @@
-# Mobile Client Application (`@workspace/mobile`)
+# 📱 NHAI Biometric Attendance Mobile Client (`@workspace/mobile`)
 
-This folder contains the cross-platform Expo React Native mobile application for the NHAI Facial Detection & Attendance system. It is designed to work in remote or offline-first scenarios, utilizing on-device Machine Learning for facial validation and local encryption for data privacy.
-
----
-
-## 📱 Features & Architecture
-
-### 1. Multi-Stage Biometric Liveness Validation (`liveness.tsx`)
-To prevent presentation attacks (photos, screen playbacks, masks), the app executes a multi-phase validation pipeline:
-* **Photometric Stereo**: Dynamically changes screen brightness/color from 4 directions (Top, Right, Bottom, Left) and evaluates the captured facial brightness gradients.
-* **ONNX Moiré Classifier**: Uses `moire.onnx` to inspect image frequency patterns and texture structures for digital pixels.
-* **rPPG Pulse Detection**: Captures green color fluctuations in the forehead region across frames to detect real blood volume pulse cycles.
-* **IMU (Inertial Measurement Unit) Correlation**: Tracks gyroscope motion alongside optical flow bounding box movement.
-
-### 2. On-Device ML Pipeline (ONNX Runtime)
-* **Face Detection**: Runs `detector.onnx` on resized 320x240 camera frames, filtering boxes via Non-Maximum Suppression (NMS).
-* **Face Recognition**: Runs `face_model_quant.onnx` on 112x112 cropped face regions to extract 512-dimensional vector embeddings.
-* **Local Embedding Vault**: Biometric templates are encrypted before saving, using key-based obfuscation to protect user identity.
-
-### 3. Offline-First Database Schema (SQLite)
-Uses `expo-sqlite` to maintain local records in `nhai_liveness.db`:
-* **`enrolled_employees`**: Stores name and encrypted embeddings.
-* **`offline_attendance`**: Stores attendance logs linked together via a blockchain-lite hash chain (`record_hash`).
-* **Privacy Purge**: Once logs are successfully synced to the central API server, local templates are overwritten with `'SECURELY_CLEARED'` to respect privacy rights, while local attendance logs are flagged as synced (`is_synced = 1`) to preserve user history.
+This folder contains the cross-platform mobile client application built on **Expo**, **React Native**, and **TypeScript**. It is designed to work in disconnected field environments (e.g., highway construction sites), performing secure biometric validation locally on the client and syncing ledger logs when internet connectivity is available.
 
 ---
 
-## 📂 Project Structure
+## 📂 Navigation & File Structure
 
 ```
 ├── app/
-│   ├── (tabs)/index.tsx        # Dashboard (List employee details, Sync offline logs)
-│   ├── liveness.tsx            # Full-screen camera scanner & liveness verification
-│   ├── success.tsx             # Successful check-in result screen
-│   ├── failure.tsx             # Failed liveness checks or mismatch screen
-│   └── denied.tsx              # Error / access denied screen
+│   ├── (tabs)/
+│   │   ├── _layout.tsx         # Tab router architecture configuration
+│   │   └── index.tsx           # Home Dashboard (Shows status, sync counters, employee grid)
+│   ├── _layout.tsx             # Main router provider & global layout theme
+│   ├── liveness.tsx            # Camera view + Multi-Stage Liveness & Biometric Extractor
+│   ├── success.tsx             # Successful check-in/enrollment screen
+│   ├── failure.tsx             # Liveness failure / profile mismatch screen
+│   └── denied.tsx              # Generic security / permission error screen
 ├── assets/
-│   ├── detector.onnx           # ONNX Face detector model
-│   ├── face_model_quant.onnx   # ONNX Face recognizer model
-│   └── moire.onnx              # ONNX Screen-spoofing checker model
-├── components/                 # Error boundary fallback, UI layout components
+│   ├── detector.onnx           # Face Bounding Box Local ML detector model
+│   ├── face_model_quant.onnx   # Facial embedding generator model (512-dim)
+│   └── moire.onnx              # Screen spoofs/Moiré texture pattern classification model
+├── components/
+│   ├── ErrorBoundary.tsx       # Catches rendering crashes and prevents app teardowns
+│   └── ErrorFallback.tsx       # User-friendly crash representation screen
 ├── constants/
-│   ├── localDb.ts              # SQLite database manager (Queries & initialization)
-│   └── vault.ts                # Cryptographic helper (Cosine similarity & encryption)
-└── hooks/                      # Custom hooks (e.g. useColors)
+│   ├── colors.ts               # Layout tokens & styling themes
+│   ├── localDb.ts              # SQLite database driver config (Offline ledger tables)
+│   ├── localDb.web.ts          # Web fallback mock SQLite driver
+│   └── vault.ts                # Biometric cryptography (AES templates & Cosine Sim calculations)
+└── hooks/
+    └── useColors.ts            # Dynamic layout color retrieval hooks
 ```
 
 ---
 
-## 🛠️ Commands
+## ⚙️ Core Technical Workflows
 
-Run these within `artifacts/mobile/` or using the monorepo root workspace runner:
+### 🎥 1. Biometric Scanner & Liveness (`app/liveness.tsx`)
+This is the core interface of the app. It controls the camera and coordinates four liveness checks:
+1. **Photometric Depth Verification**: Flashes the screen at maximum brightness from four quadrants sequentially (Top, Right, Bottom, Left). It decodes the captured frames and analyzes brightness ratios. Real faces have 3D contours that reflect directional light asymmetrically, whereas flat paper/screen printouts reflect light uniformly.
+2. **ONNX Moiré Classifier**: Feeds an expanded cropped face bounding box into `moire.onnx` (a model specialized in texture classification) to flag digital pixel refresh grids indicative of screen presentation attacks.
+3. **rPPG Heart Rate Monitor**: Monitors forehead green color channel variance over 8 seconds. It utilizes a bandpass filter (0.7–4 Hz) to verify the presence of human heart rate periodicity.
+4. **IMU Match**: Subscribes to the device gyroscope (`expo-sensors`) to correlate physical device tilt with optical flow coordinates of the face box.
 
-* **Start Expo Bundler**:
+### 🧠 2. Local ONNX Machine Learning Inference
+If liveness is verified, the app captures a face frame and runs:
+1. **Face Detection**: Converts the frame to RGB, resizes it to 320x240, and inputs it to `detector.onnx` using `onnxruntime-react-native`. Runs Non-Maximum Suppression (NMS) to isolate the face box.
+2. **Biometric Extraction**: Crops the face box, resizes it to 112x112, normalizes pixels, and inputs it to `face_model_quant.onnx` to generate a 512-dimensional floating-point vector embedding.
+
+### 🔒 3. Biometric Security & SQLite Database
+* **Encryption**: Embedding vectors are encrypted in memory (`constants/vault.ts`) before being stored in the local SQLite database.
+* **Blockchain-lite Ledger**: Attendance logs are saved to the SQLite database `offline_attendance` table, with each record linked to the previous one via a SHA-256 hash.
+* **Privacy Purge**: Upon a successful sync with the API server, the local SQLite database clears the employee biometric templates (`encrypted_embeddings = 'SECURELY_CLEARED'`) to protect privacy, while retaining basic logs to show attendance history locally.
+
+---
+
+## 🛠️ Run & Development Scripts
+
+Run these scripts inside `artifacts/mobile/` or using the monorepo root workspace runner:
+
+* **Start Metro Bundler** (Runs expo package manager):
   ```bash
   pnpm run dev
-  # or
-  pnpm run start
   ```
-* **Run Web / Serve static backend mocker**:
+* **Run Web Mocker**:
   ```bash
   pnpm run serve
   ```
-* **Run TypeScript Typechecker**:
+* **Typecheck components**:
   ```bash
   pnpm run typecheck
   ```
-* **Compile Static Builds**:
-  ```bash
-  pnpm run build
-  ```
-* **Run Native Clients (requires SDK setups)**:
+* **Run native builds**:
   ```bash
   pnpm run android
   pnpm run ios
