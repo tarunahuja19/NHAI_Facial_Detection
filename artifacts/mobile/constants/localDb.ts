@@ -5,7 +5,7 @@ const db = SQLite.openDatabaseSync("nhai_liveness.db");
 // Initialize database schema
 db.execSync(`
   PRAGMA journal_mode = WAL;
-  
+
   CREATE TABLE IF NOT EXISTS enrolled_employees (
     employee_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -164,4 +164,3 @@ export async function getAllAttendanceLocal(): Promise<OfflineAttendance[]> {
     `SELECT * FROM offline_attendance ORDER BY timestamp DESC;`
   );
 }
-

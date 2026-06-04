@@ -32,24 +32,45 @@ router.post("/sync", async (req, res) => {
           .limit(1);
 
         if (existing.length > 0) {
-          // Conflict resolution: average embeddings
-          const existingEmbeddings = JSON.parse(existing[0].embeddings) as number[];
-          const merged = new Array(512).fill(0);
-          for (let i = 0; i < 512; i++) {
-            merged[i] = (existingEmbeddings[i] + embeddings[i]) / 2;
+          // Conflict resolution: average embeddings (robust check on JSON parse)
+          let existingEmbeddings: number[] = [];
+          try {
+            existingEmbeddings = JSON.parse(existing[0].embeddings) as number[];
+          } catch (e) {
+            existingEmbeddings = [];
           }
-          // Re-normalize merged vector to unit length
-          const norm = Math.sqrt(merged.reduce((sum, v) => sum + v * v, 0));
-          const normalized = merged.map((v) => v / (norm || 1));
 
-          await db
-            .update(employeesTable)
-            .set({
-              name,
-              embeddings: JSON.stringify(normalized),
-              updatedAt: new Date(),
-            })
-            .where(eq(employeesTable.employeeId, employee_id));
+          if (Array.isArray(existingEmbeddings) && existingEmbeddings.length === 512) {
+            const merged = new Array(512).fill(0);
+            for (let i = 0; i < 512; i++) {
+              merged[i] = (existingEmbeddings[i] + embeddings[i]) / 2;
+            }
+            // Re-normalize merged vector to unit length
+            const norm = Math.sqrt(merged.reduce((sum, v) => sum + v * v, 0));
+            const normalized = merged.map((v) => v / (norm || 1));
+
+            await db
+              .update(employeesTable)
+              .set({
+                name,
+                embeddings: JSON.stringify(normalized),
+                updatedAt: new Date(),
+              })
+              .where(eq(employeesTable.employeeId, employee_id));
+          } else {
+            // Fallback: If existing template is malformed, overwrite with new valid enrollment
+            const norm = Math.sqrt(embeddings.reduce((sum, v) => sum + v * v, 0));
+            const normalized = embeddings.map((v) => v / (norm || 1));
+
+            await db
+              .update(employeesTable)
+              .set({
+                name,
+                embeddings: JSON.stringify(normalized),
+                updatedAt: new Date(),
+              })
+              .where(eq(employeesTable.employeeId, employee_id));
+          }
         } else {
           // New employee enrollment
           const norm = Math.sqrt(embeddings.reduce((sum, v) => sum + v * v, 0));

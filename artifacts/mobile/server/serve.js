@@ -45,7 +45,7 @@ function getAppName() {
   }
 }
 
-function serveManifest(platform, res) {
+function serveManifest(req, platform, res) {
   const manifestPath = path.join(STATIC_ROOT, platform, "manifest.json");
 
   if (!fs.existsSync(manifestPath)) {
@@ -56,18 +56,59 @@ function serveManifest(platform, res) {
     return;
   }
 
-  const manifest = fs.readFileSync(manifestPath, "utf-8");
+  const manifestStr = fs.readFileSync(manifestPath, "utf-8");
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestStr);
+  } catch (e) {
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Failed to parse manifest" }));
+    return;
+  }
+
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const protocol = forwardedProto || (req.socket.encrypted ? "https" : "http");
+  const host = req.headers["x-forwarded-host"] || req.headers["host"];
+  const reqBaseUrl = `${protocol}://${host}`;
+
+  // Dynamically rewrite build-time URLs to match the request host and protocol
+  if (manifest.launchAsset && manifest.launchAsset.url) {
+    const launchUrl = manifest.launchAsset.url;
+    const match = launchUrl.match(/^(https?:\/\/[^\/]+)/);
+    if (match) {
+      const buildBaseUrl = match[1];
+      manifest.launchAsset.url = launchUrl.replace(buildBaseUrl, reqBaseUrl);
+
+      if (Array.isArray(manifest.assets)) {
+        manifest.assets.forEach((asset) => {
+          if (asset.url) {
+            asset.url = asset.url.replace(buildBaseUrl, reqBaseUrl);
+          }
+        });
+      }
+
+      if (manifest.extra) {
+        if (manifest.extra.expoClient) {
+          manifest.extra.expoClient.hostUri = `${host}/${platform}`;
+        }
+        if (manifest.extra.expoGo) {
+          manifest.extra.expoGo.debuggerHost = `${host}/${platform}`;
+        }
+      }
+    }
+  }
+
   res.writeHead(200, {
     "content-type": "application/json",
     "expo-protocol-version": "1",
     "expo-sfv-version": "0",
   });
-  res.end(manifest);
+  res.end(JSON.stringify(manifest, null, 2));
 }
 
 function serveLandingPage(req, res, landingPageTemplate, appName) {
   const forwardedProto = req.headers["x-forwarded-proto"];
-  const protocol = forwardedProto || "https";
+  const protocol = forwardedProto || (req.socket.encrypted ? "https" : "http");
   const host = req.headers["x-forwarded-host"] || req.headers["host"];
   const baseUrl = `${protocol}://${host}`;
   const expsUrl = `${host}`;
@@ -118,7 +159,7 @@ const server = http.createServer((req, res) => {
   if (pathname === "/" || pathname === "/manifest") {
     const platform = req.headers["expo-platform"];
     if (platform === "ios" || platform === "android") {
-      return serveManifest(platform, res);
+      return serveManifest(req, platform, res);
     }
 
     if (pathname === "/") {

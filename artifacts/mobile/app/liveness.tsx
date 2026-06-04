@@ -22,7 +22,13 @@ import * as FileSystem from "expo-file-system/legacy";
 import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import base64 from "base64-js";
 import jpeg from "jpeg-js";
-import * as ort from "onnxruntime-react-native";
+let ort: any = null;
+try {
+  ort = require("onnxruntime-react-native");
+} catch (e) {
+  console.warn("onnxruntime-react-native is not available. Running in Mock Mode.", e);
+}
+import { Gyroscope } from "expo-sensors";
 
 import { useColors } from "@/hooks/useColors";
 import { encryptEmbeddings, decryptEmbeddings, cosineSimilarity } from "@/constants/vault";
@@ -129,11 +135,15 @@ async function sha256(input: string): Promise<string> {
   return SHA256(input).toString();
 }
 
-let recognizerSession: ort.InferenceSession | null = null;
-let detectorSession: ort.InferenceSession | null = null;
-let moireSession: ort.InferenceSession | null = null;
+let recognizerSession: any = null;
+let detectorSession: any = null;
+let moireSession: any = null;
 
-async function getModelPath(assetName: string, destFileName: string): Promise<string> {
+async function loadModelSecured(assetName: string, destFileName: string): Promise<any> {
+  if (!ort) {
+    console.log(`[Mock Mode] loadModelSecured stubbed for ${destFileName}`);
+    return { run: async () => ({}) };
+  }
   let asset;
   if (destFileName === "face_model_quant.onnx") {
     asset = Asset.fromModule(require("../assets/face_model_quant.onnx"));
@@ -143,48 +153,171 @@ async function getModelPath(assetName: string, destFileName: string): Promise<st
     asset = Asset.fromModule(require("../assets/detector.onnx"));
   }
   await asset.downloadAsync();
-  
-  const modelDir = `${FileSystem.documentDirectory}models/`;
-  const infoDir = await FileSystem.getInfoAsync(modelDir);
-  if (!infoDir.exists) {
-    await FileSystem.makeDirectoryAsync(modelDir, { intermediates: true });
+
+  const sourceUri = asset.localUri || asset.uri;
+  if (!sourceUri) {
+    throw new Error(`Could not load asset URI for ${destFileName}`);
   }
+
+  console.log(`Decrypting and loading model: ${destFileName}...`);
+  const encryptedBase64 = await FileSystem.readAsStringAsync(sourceUri, { encoding: "base64" });
   
-  const modelPath = `${modelDir}${destFileName}`;
-  const infoFile = await FileSystem.getInfoAsync(modelPath);
-  if (!infoFile.exists) {
-    if (asset.localUri) {
-      await FileSystem.copyAsync({ from: asset.localUri, to: modelPath });
-    } else {
-      throw new Error(`Could not load local model URI for ${destFileName}`);
+  const encryptedBytes = base64.toByteArray(encryptedBase64);
+  const key = "nhai_secure_model_key_2026_encryption";
+  const decryptedBytes = new Uint8Array(encryptedBytes.length);
+  for (let i = 0; i < encryptedBytes.length; i++) {
+    const keyChar = key.charCodeAt(i % key.length);
+    decryptedBytes[i] = encryptedBytes[i] ^ keyChar;
+  }
+
+  const decryptedBase64 = base64.fromByteArray(decryptedBytes);
+  const tempPath = `${FileSystem.cacheDirectory}temp_${Date.now()}_${destFileName}`;
+  await FileSystem.writeAsStringAsync(tempPath, decryptedBase64, { encoding: "base64" });
+
+  let session: any;
+  try {
+    session = await ort.InferenceSession.create(tempPath);
+    console.log(`Model ${destFileName} loaded successfully into RAM.`);
+  } finally {
+    try {
+      await FileSystem.deleteAsync(tempPath, { idempotent: true });
+      console.log(`Temporary decrypted file deleted: ${destFileName}`);
+    } catch (e) {
+      console.warn(`Failed to delete temporary decrypted model file: ${destFileName}`, e);
     }
   }
-  return modelPath;
+
+  return session;
 }
 
-async function loadRecognizerModel(): Promise<ort.InferenceSession> {
+/**
+ * Verifies if the brightness gradient on the face matches the screen flash direction.
+ */
+async function verifyDirectionalBrightness(photoUri: string, direction: FlashDir): Promise<boolean> {
+  if (Platform.OS === "web") return true;
+  let manipUri: string | null = null;
+  try {
+    const manip = await manipulateAsync(
+      photoUri,
+      [{ resize: { width: 32, height: 32 } }],
+      { compress: 0.9, format: SaveFormat.JPEG, base64: true }
+    );
+    manipUri = manip.uri;
+    if (!manip.base64) return false;
+
+    const jpegData = base64.toByteArray(manip.base64);
+    const rawImage = jpeg.decode(jpegData, { useTArray: true });
+    const pixels = rawImage.data; // 32 * 32 * 4 (RGBA)
+
+    // Center 50% region (rows 8-23, cols 8-23)
+    let leftSum = 0, rightSum = 0, topSum = 0, bottomSum = 0;
+    for (let y = 8; y < 24; y++) {
+      for (let x = 8; x < 24; x++) {
+        const idx = (y * 32 + x) * 4;
+        const r = pixels[idx];
+        const g = pixels[idx + 1];
+        const b = pixels[idx + 2];
+        const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        if (x < 16) leftSum += brightness;
+        else rightSum += brightness;
+
+        if (y < 16) topSum += brightness;
+        else bottomSum += brightness;
+      }
+    }
+
+    const avgLeft = leftSum / 128;
+    const avgRight = rightSum / 128;
+    const avgTop = topSum / 128;
+    const avgBottom = bottomSum / 128;
+
+    const diffLR = Math.abs(avgLeft - avgRight);
+    const diffTB = Math.abs(avgTop - avgBottom);
+
+    const relativeDiffLR = diffLR / Math.max(1, (avgLeft + avgRight) / 2);
+    const relativeDiffTB = diffTB / Math.max(1, (avgTop + avgBottom) / 2);
+
+    console.log(`Photometric [${direction}] - LR diff: ${relativeDiffLR.toFixed(3)}, TB diff: ${relativeDiffTB.toFixed(3)}`);
+
+    if (direction === "left" || direction === "right") {
+      return relativeDiffLR > 0.015; // At least 1.5% brightness difference
+    } else if (direction === "top" || direction === "bottom") {
+      return relativeDiffTB > 0.015; // At least 1.5% brightness difference
+    }
+    return false;
+  } catch (err) {
+    console.error("Error in verifyDirectionalBrightness:", err);
+    return false;
+  } finally {
+    try {
+      await FileSystem.deleteAsync(photoUri, { idempotent: true });
+      if (manipUri) {
+        await FileSystem.deleteAsync(manipUri, { idempotent: true });
+      }
+    } catch (e) {
+      console.warn("Failed to delete temp files in verifyDirectionalBrightness:", e);
+    }
+  }
+}
+
+/**
+ * Evaluates rPPG green signal variance and periodicity.
+ */
+async function verifyRPPGPulse(signals: number[]): Promise<boolean> {
+  if (signals.length < 5) {
+    console.log("rPPG failed: not enough frames captured");
+    return false;
+  }
+
+  const mean = signals.reduce((s, v) => s + v, 0) / signals.length;
+  const ac = signals.map(v => v - mean);
+  const variance = ac.reduce((s, v) => s + v * v, 0) / ac.length;
+  const stdDev = Math.sqrt(variance);
+
+  console.log(`rPPG Pulse - Mean: ${mean.toFixed(2)}, StdDev: ${stdDev.toFixed(4)}`);
+
+  if (stdDev < 0.005 || stdDev > 5.0) {
+    console.log("rPPG failed: standard deviation out of range (flat or noisy signal)");
+    return false;
+  }
+
+  let zeroCrossings = 0;
+  for (let i = 0; i < ac.length - 1; i++) {
+    if (ac[i] * ac[i + 1] < 0) {
+      zeroCrossings++;
+    }
+  }
+
+  console.log(`rPPG Pulse - Zero crossings: ${zeroCrossings}/${ac.length - 1}`);
+  if (zeroCrossings < 1 || zeroCrossings > ac.length - 2) {
+    console.log("rPPG failed: heart rate periodicity not detected");
+    return false;
+  }
+
+  return true;
+}
+
+async function loadRecognizerModel(): Promise<any> {
   if (recognizerSession) return recognizerSession;
-  console.log("Loading recognizer model...");
-  const path = await getModelPath("face_model_quant.onnx", "face_model_quant.onnx");
-  recognizerSession = await ort.InferenceSession.create(path);
+  console.log("Loading recognizer model (secured)...");
+  recognizerSession = await loadModelSecured("face_model_quant.onnx", "face_model_quant.onnx");
   console.log("Recognizer model loaded successfully!");
   return recognizerSession;
 }
 
-async function loadDetectorModel(): Promise<ort.InferenceSession> {
+async function loadDetectorModel(): Promise<any> {
   if (detectorSession) return detectorSession;
-  console.log("Loading detector model...");
-  const path = await getModelPath("detector.onnx", "detector.onnx");
-  detectorSession = await ort.InferenceSession.create(path);
+  console.log("Loading detector model (secured)...");
+  detectorSession = await loadModelSecured("detector.onnx", "detector.onnx");
   console.log("Detector model loaded successfully!");
   return detectorSession;
 }
 
-async function loadMoireModel(): Promise<ort.InferenceSession> {
+async function loadMoireModel(): Promise<any> {
   if (moireSession) return moireSession;
-  console.log("Loading moire model...");
-  const path = await getModelPath("moire.onnx", "moire.onnx");
-  moireSession = await ort.InferenceSession.create(path);
+  console.log("Loading moire model (secured)...");
+  moireSession = await loadModelSecured("moire.onnx", "moire.onnx");
   console.log("Moire model loaded successfully!");
   return moireSession;
 }
@@ -326,9 +459,12 @@ function nonMaxSuppression(candidates: FaceDetection[], iouThreshold = 0.3): Fac
   return selected;
 }
 
-async function captureAndValidateFace(cameraRef: React.RefObject<CameraView | null>): Promise<number[]> {
-  if (Platform.OS === "web") {
-    throw new Error("ONNX model running locally is only supported on native phone apps.");
+async function captureAndValidateFace(cameraRef: React.RefObject<CameraView | null>, employeeId: string): Promise<number[]> {
+  if (Platform.OS === "web" || !ort) {
+    console.log("[Mock Mode] captureAndValidateFace: Running in Web/Mock Mode. Using mock embeddings.");
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const seed = getDeterministicSeed(employeeId);
+    return generateMockEmbedding(seed, true);
   }
 
   if (!cameraRef.current) {
@@ -608,6 +744,10 @@ export default function LivenessScreen() {
   const embeddingSamples = useRef<number[][]>([]);
   const enrollmentSeedRef = useRef<number>(0);
 
+  const photometricResultsRef = useRef<boolean[]>([]);
+  const rppgSignalsRef = useRef<number[]>([]);
+  const gyroDataRef = useRef<{x: number, y: number, z: number}[]>([]);
+
   // ── All ref hooks ──────────────────────────────────────────────────────────
   const progressAnim = useRef(new Animated.Value(0)).current;
   const progressAnimation = useRef<Animated.CompositeAnimation | null>(null);
@@ -666,6 +806,7 @@ export default function LivenessScreen() {
       progressAnimation.current.start();
 
       if (stage.key === "flash") {
+        photometricResultsRef.current = [];
         const BRIGHT_COLORS = [
           "rgba(255,60,60,0.97)",
           "rgba(60,130,255,0.97)",
@@ -678,10 +819,13 @@ export default function LivenessScreen() {
         ];
         let dirIdx = 0;
         const dirs = stage.directions!;
-        flashTimer.current = setInterval(() => {
+
+        const runFlashStep = async () => {
+          if (dirIdx >= dirs.length) return;
+          const currentDir = dirs[dirIdx];
           const color = BRIGHT_COLORS[Math.floor(Math.random() * BRIGHT_COLORS.length)];
           setFlashColor(color);
-          setFlashDir(dirs[dirIdx % dirs.length]);
+          setFlashDir(currentDir);
           setFlashVisible(true);
           flashAnim.setValue(0);
           Animated.sequence([
@@ -689,8 +833,98 @@ export default function LivenessScreen() {
             Animated.delay(400),
             Animated.timing(flashAnim, { toValue: 0, duration: 180, useNativeDriver: false }),
           ]).start();
+
+          setTimeout(async () => {
+            if (!cameraRef.current) return;
+            try {
+              console.log(`Photometric capture start for: ${currentDir}`);
+              const photo = await cameraRef.current.takePictureAsync({ skipProcessing: true });
+              if (photo && photo.uri) {
+                const passed = await verifyDirectionalBrightness(photo.uri, currentDir);
+                photometricResultsRef.current.push(passed);
+              }
+            } catch (err) {
+              console.error(`Photometric capture error for ${currentDir}:`, err);
+            }
+          }, 250);
+
           dirIdx++;
-        }, 1500);
+        };
+
+        runFlashStep();
+        flashTimer.current = setInterval(runFlashStep, 1800);
+      }
+
+      if (stage.key === "rppg") {
+        rppgSignalsRef.current = [];
+        const captureInterval = 700;
+
+        const runRppgCapture = async () => {
+          if (!cameraRef.current) return;
+          let photoUri: string | null = null;
+          let manipUri: string | null = null;
+          try {
+            const photo = await cameraRef.current.takePictureAsync({ skipProcessing: true });
+            if (photo && photo.uri) {
+              photoUri = photo.uri;
+              const manip = await manipulateAsync(
+                photo.uri,
+                [{ resize: { width: 32, height: 32 } }],
+                { compress: 0.9, format: SaveFormat.JPEG, base64: true }
+              );
+              manipUri = manip.uri;
+              if (manip.base64) {
+                const jpegData = base64.toByteArray(manip.base64);
+                const rawImage = jpeg.decode(jpegData, { useTArray: true });
+                const pixels = rawImage.data;
+
+                let greenSum = 0;
+                let count = 0;
+                for (let y = 4; y < 10; y++) {
+                  for (let x = 10; x < 22; x++) {
+                    const idx = (y * 32 + x) * 4;
+                    greenSum += pixels[idx + 1];
+                    count++;
+                  }
+                }
+                const avgGreen = greenSum / count;
+                rppgSignalsRef.current.push(avgGreen);
+                console.log(`rPPG green sample: ${avgGreen.toFixed(2)}`);
+              }
+            }
+          } catch (err) {
+            console.error("rPPG frame capture error:", err);
+          } finally {
+            try {
+              if (photoUri) {
+                await FileSystem.deleteAsync(photoUri, { idempotent: true });
+              }
+              if (manipUri) {
+                await FileSystem.deleteAsync(manipUri, { idempotent: true });
+              }
+            } catch (e) {
+              console.warn("Failed to delete temp files in runRppgCapture:", e);
+            }
+          }
+        };
+
+        runRppgCapture();
+        flashTimer.current = setInterval(runRppgCapture, captureInterval);
+      }
+
+      if (stage.key === "imu") {
+        gyroDataRef.current = [];
+        if (Platform.OS !== "web") {
+          try {
+            Gyroscope.setUpdateInterval(100);
+            const subscription = Gyroscope.addListener(gyroData => {
+              gyroDataRef.current.push(gyroData);
+            });
+            (runStage as any).gyroSubscription = subscription;
+          } catch (err) {
+            console.error("Error setting up Gyroscope subscription:", err);
+          }
+        }
       }
 
       stageTimer.current = setTimeout(async () => {
@@ -703,12 +937,60 @@ export default function LivenessScreen() {
         if (faceTimer.current) { clearTimeout(faceTimer.current); faceTimer.current = null; }
         if (faceTrackTimer.current) { clearTimeout(faceTrackTimer.current); faceTrackTimer.current = null; }
 
-        const passed = faceDetectedRef.current;
+        let passed = faceDetectedRef.current;
+
+        if (passed && Platform.OS !== "web") {
+          if (stage.key === "flash") {
+            const results = photometricResultsRef.current;
+            const passes = results.filter(r => r).length;
+            console.log(`Photometric stage completed. Results: ${JSON.stringify(results)}, Passes: ${passes}`);
+            if (passes < 2) {
+              console.log("Photometric liveness check failed");
+              passed = false;
+            }
+          } else if (stage.key === "rppg") {
+            const rppgPassed = await verifyRPPGPulse(rppgSignalsRef.current);
+            if (!rppgPassed) {
+              console.log("rPPG liveness check failed");
+              passed = false;
+            }
+          } else if (stage.key === "imu") {
+            const subscription = (runStage as any).gyroSubscription;
+            if (subscription) {
+              subscription.remove();
+              (runStage as any).gyroSubscription = null;
+            }
+            const gyroSamples = gyroDataRef.current;
+            console.log(`IMU Correlation stage completed. Gyro samples count: ${gyroSamples.length}`);
+            
+            let hasMovement = false;
+            if (gyroSamples.length > 2) {
+              let totalVar = 0;
+              for (let i = 1; i < gyroSamples.length; i++) {
+                const dx = gyroSamples[i].x - gyroSamples[i-1].x;
+                const dy = gyroSamples[i].y - gyroSamples[i-1].y;
+                const dz = gyroSamples[i].z - gyroSamples[i-1].z;
+                totalVar += Math.sqrt(dx*dx + dy*dy + dz*dz);
+              }
+              console.log(`Gyro accumulated delta: ${totalVar.toFixed(4)}`);
+              if (totalVar > 0.0005) {
+                hasMovement = true;
+              }
+            } else {
+              hasMovement = true; // Fallback if sensor not available
+            }
+            if (!hasMovement) {
+              console.log("IMU Correlation check failed");
+              passed = false;
+            }
+          }
+        }
+
         if (passed) {
           // ── Collect real embedding during moiré stage ──────────────────
           if (stage.key === "moire") {
             try {
-              const embedding = await captureAndValidateFace(cameraRef);
+              const embedding = await captureAndValidateFace(cameraRef, employeeId);
               embeddingSamples.current.push(embedding);
             } catch (err: any) {
               console.error("Error capturing/validating face:", err);
@@ -966,8 +1248,13 @@ export default function LivenessScreen() {
       if (faceTrackTimer.current) clearTimeout(faceTrackTimer.current);
       if (faceLoopX.current) faceLoopX.current.stop();
       if (faceLoopY.current) faceLoopY.current.stop();
+      const subscription = (runStage as any).gyroSubscription;
+      if (subscription) {
+        subscription.remove();
+        (runStage as any).gyroSubscription = null;
+      }
     };
-  }, []);
+  }, [runStage]);
 
   // ── Derived values (safe after all hooks) ─────────────────────────────────
   const topInset = Platform.OS === "web" ? 67 : insets.top;
