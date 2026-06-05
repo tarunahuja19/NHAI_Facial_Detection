@@ -200,7 +200,7 @@ If any log row is updated, deleted, or inserted out of order, the chain of hashe
 ## 📖 Documentation & Screenshots
 
 ### 🔗 Reference Links
-* **System Documentation**: [Read the Full Documentation](https://github.com/tarunahuja19/NHAI_Facial_Detection/wiki) *(Placeholder: Update this link once documentation is compiled)*
+* **System Documentation**: [Read the Full Documentation](https://documentation.tarunahuja199.workers.dev/) 
 
 ### 📸 Application Interface Screenshots
 *(Placeholder: Upload app screenshots here directly from the GitHub web UI or save them under `artifacts/mobile/assets/`)*
