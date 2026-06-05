@@ -7,7 +7,7 @@ import jax.random as jr
 import orbax.checkpoint as ocp
 from jax2onnx import to_onnx
 
-from model import FaceLiVTv2Lite
+from model import Iris
 from train_digiface_cluster import TrainConfig, init_train_state
 
 def main():
@@ -77,7 +77,7 @@ def main():
     to_onnx(
         predict_fn,
         inputs=[(1, 3, 112, 112)], # Fixed batch size of 1 for mobile deployment
-        model_name="FaceLiVTv2Lite",
+        model_name="Iris",
         return_mode="file",
         output_path=output_path,
         input_names=["input_image"],
