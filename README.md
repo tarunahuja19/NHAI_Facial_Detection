@@ -203,7 +203,7 @@ If any log row is updated, deleted, or inserted out of order, the chain of hashe
 * **System Documentation**: [Read the Full Documentation](https://documentation.tarunahuja199.workers.dev/) 
 
 ### 📸 Application Interface Screenshots
-*(Placeholder: Upload app screenshots here directly from the GitHub web UI or save them under `artifacts/mobile/assets/`)*
+
 
 | 📱 1. Enrollment Screen | 🔐 2. Biometric Verification | 🚀 3. Sync Status |
 |:---:|:---:|:---:|
