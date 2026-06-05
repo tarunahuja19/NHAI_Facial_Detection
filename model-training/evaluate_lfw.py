@@ -14,7 +14,7 @@ from sklearn.datasets import fetch_lfw_pairs
 from sklearn.metrics import roc_curve, auc
 
 # Import local models and configuration
-from model import FaceLiVTv2Lite
+from model import Iris
 from losses import AdaFaceLoss
 from train_digiface_cluster import FaceTrainState, TrainConfig
 
@@ -39,7 +39,7 @@ def preprocess_image(img, image_size=112):
 
 def main():
     checkpoint_dir = "./checkpoints_digiface_cluster"
-    print("Initializing FaceLiVTv2-Lite model structure...")
+    print("Initializing Iris model structure...")
     
     cfg = TrainConfig(
         num_classes=10000,

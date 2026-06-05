@@ -126,7 +126,7 @@ Spoofing a standard camera check-in with a photo printout or digital tablet is s
 
 The system uses two custom deep neural networks optimized for local edge execution:
 
-#### 1. Face Recognition & Liveness Model (`FaceLiVTv2-Lite`)
+#### 1. Face Recognition & Liveness Model (`Iris`)
 Implemented in **JAX/Flax**, this model is optimized to fit within a strict **4 MB INT8 memory limit** (approx. 4.08M parameters) for deployment on edge devices.
 
 ```mermaid

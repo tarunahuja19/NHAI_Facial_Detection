@@ -1,5 +1,5 @@
 """
-FaceLiVTv2-Lite  --  JAX/Flax implementation  (production-ready)
+Iris  --  JAX/Flax implementation  (production-ready)
 ================================================================
 Designed to fit under 4 MB at int8 quantisation.
 
@@ -64,7 +64,7 @@ import numpy as np
 
 # Public API
 __all__ = [
-    "FaceLiVTv2Lite",
+    "Iris",
     "create_inference_model",
     "count_params",
     "estimate_int8_size_mb",
@@ -352,10 +352,10 @@ class FFN(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────
-#  FaceLiVTv2Block
+#  IrisBlock
 # ─────────────────────────────────────────────────────────────
 
-class FaceLiVTv2Block(nn.Module):
+class IrisBlock(nn.Module):
     """Pre-norm residual block with optional DropPath.
 
     Two variants:
@@ -590,8 +590,8 @@ def _linear_drop_path_schedule(total_blocks: int, max_rate: float) -> list:
     return [max_rate * i / (total_blocks - 1) for i in range(total_blocks)]
 
 
-class FaceLiVTv2Lite(nn.Module):
-    """FaceLiVTv2-Lite: <4 MB int8, designed for edge deployment.
+class Iris(nn.Module):
+    """Iris: <4 MB int8, designed for edge deployment.
 
     Architecture                Spatial      Channels  Blocks
     ──────────────────────────────────────────────────────────
@@ -629,7 +629,7 @@ class FaceLiVTv2Lite(nn.Module):
         block_idx = 0
 
         # Optionally wrap block class with gradient checkpointing
-        Block = nn.remat(FaceLiVTv2Block, static_argnums=2) if self.use_remat else FaceLiVTv2Block
+        Block = nn.remat(IrisBlock, static_argnums=2) if self.use_remat else IrisBlock
 
         # ── Stem ────────────────────────────────────────────────────────────
         x = Stem(c1=C[0], c2=C[1])(x, training=training)  # → 28×28×C[1]
@@ -763,7 +763,7 @@ def create_inference_model(
     Returns:
         (model, variables) — the inference model instance and variables.
     """
-    model = FaceLiVTv2Lite(drop_path_rate=0.0, **model_kwargs)
+    model = Iris(drop_path_rate=0.0, **model_kwargs)
     return model, variables
 
 
@@ -783,11 +783,11 @@ if __name__ == "__main__":
         )
 
     print("=" * 60)
-    print("  FaceLiVTv2-Lite -- Parameter Audit & Sanity Check")
+    print("  Iris -- Parameter Audit & Sanity Check")
     print("=" * 60)
 
     key   = jr.PRNGKey(0)
-    model = FaceLiVTv2Lite(drop_path_rate=0.0)
+    model = Iris(drop_path_rate=0.0)
     dummy = jr.normal(key, (2, 3, 112, 112))
 
     # Initialise with both param and droppath RNGs

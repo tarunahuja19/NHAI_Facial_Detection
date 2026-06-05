@@ -9,7 +9,7 @@ This directory houses the end-to-end Machine Learning pipelines for the **NHAI B
 The biometric verification system relies on two distinct models executing locally on the client's device:
 
 1. **Face Detector (TensorFlow/Keras)**: A super-lightweight MBConv-based model that detects the face bounding box, identifies 5 key landmarks (eyes, nose, mouth corners), and calculates the face presence confidence score.
-2. **Face Recognition & Liveness Backbone (JAX/Flax)**: The `FaceLiVTv2-Lite` network that maps the cropped face to a 512-dimensional embedding and determines liveness features under a strict **4 MB INT8 memory budget**.
+2. **Face Recognition & Liveness Backbone (JAX/Flax)**: The `Iris` network that maps the cropped face to a 512-dimensional embedding and determines liveness features under a strict **4 MB INT8 memory budget**.
 
 ```mermaid
 graph TD
@@ -46,9 +46,9 @@ graph TD
 * **[`param_calc.py`](file:///home/jemin/Desktop/Code/nhai-app/model-training/param_calc.py)** & **[`param_calc_v2.py`](file:///home/jemin/Desktop/Code/nhai-app/model-training/param_calc_v2.py)**: Performance inspection scripts evaluating computational latency, FLOP counts, and parameter allocations for different model variants.
 * **[`quantize_detector.py`](file:///home/jemin/Desktop/Code/nhai-app/model-training/quantize_detector.py)**: Utilities to post-quantize the Keras weights into an optimized INT8 model format.
 
-### 2. Face Recognition & Liveness (`FaceLiVTv2-Lite`)
+### 2. Face Recognition & Liveness (`Iris`)
 
-* **[`model.py`](file:///home/jemin/Desktop/Code/nhai-app/model-training/model.py)**: JAX/Flax implementation of the production-ready `FaceLiVTv2Lite` architecture. Specifically engineered with structural re-parameterization token mixers (`RepMix`), Lite Multi-Head Linear Attention (`LiteMHLA`), and Learned Graph Attention (`LearnedGAT`) to achieve highly accurate 512-dim embedding representation within a sub-4MB footprint.
+* **[`model.py`](file:///home/jemin/Desktop/Code/nhai-app/model-training/model.py)**: JAX/Flax implementation of the production-ready `Iris` architecture. Specifically engineered with structural re-parameterization token mixers (`RepMix`), Lite Multi-Head Linear Attention (`LiteMHLA`), and Learned Graph Attention (`LearnedGAT`) to achieve highly accurate 512-dim embedding representation within a sub-4MB footprint.
 * **[`losses.py`](file:///home/jemin/Desktop/Code/nhai-app/model-training/losses.py)**: Numerical-stable implementations of advanced training loss layers:
   * **AdaFace**: An adaptive margin loss matching image quality (essential for low-illumination and outdoor toll plaza settings).
   * **ArcFace**: Standard additive angular margin loss.
@@ -71,7 +71,7 @@ pip install jax flax optax tensorflow keras onnx onnxruntime tf2onnx opencv-pyth
 
 ### 🏋️ Training the Recognition Model
 
-To train the `FaceLiVTv2-Lite` backbone on a multi-GPU node using VGGFace2:
+To train the `Iris` backbone on a multi-GPU node using VGGFace2:
 ```bash
 python train.py \
     --dataset_name "chronopt-research/cropped-vggface2-224" \
