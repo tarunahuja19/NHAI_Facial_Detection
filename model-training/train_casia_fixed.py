@@ -1,11 +1,11 @@
 """
-train_casia.py  --  FaceLiVTv2-Lite on CASIA-WebFace (HuggingFace, JAX/Flax)
+train_casia.py  --  Iris on CASIA-WebFace (HuggingFace, JAX/Flax)
 ========================================================================
 
 The script will:
   1. Load the SaffalPoosh/casia_web_face dataset from HuggingFace
   2. Pre-process images (align + resize to 112x112, normalize)
-  3. Train FaceLiVTv2Lite with AdaFace loss
+  3. Train Iris with AdaFace loss
   4. Validate on a held-out split (rank-1 retrieval accuracy on the val split)
   5. Save checkpoints to /home/jemin/Desktop/Code/nhai/checkpoints/
 
@@ -41,7 +41,7 @@ import orbax.checkpoint as ocp
 from tqdm import tqdm
 
 # ─── local ────────────────────────────────────────────────────────────────────
-from model import FaceLiVTv2Lite, count_params, estimate_int8_size_mb
+from model import Iris, count_params, estimate_int8_size_mb
 from losses import AdaFaceLoss, ArcFaceLoss
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -269,7 +269,7 @@ def init_train_state(
     k1, k2, k3 = jr.split(key, 3)
 
     # ── backbone ──
-    model = FaceLiVTv2Lite(
+    model = Iris(
         embedding_dim  = cfg.embedding_dim,
         drop_path_rate = cfg.drop_path_rate,
         use_remat      = cfg.use_remat,
@@ -662,7 +662,7 @@ def train(cfg: TrainConfig = CFG):
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train FaceLiVTv2-Lite on CASIA-WebFace")
+    parser = argparse.ArgumentParser(description="Train Iris on CASIA-WebFace")
     parser.add_argument("--output_dir",     default=CFG.output_dir)
     parser.add_argument("--checkpoint_dir", default=CFG.checkpoint_dir)
     parser.add_argument("--loss_type",      default=CFG.loss_type,

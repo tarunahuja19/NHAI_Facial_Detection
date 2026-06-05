@@ -1,5 +1,5 @@
 """
-train_vggface2_cluster.py  --  FaceLiVTv2-Lite on VGGFace2 (GPU Cluster/Multi-Host Optimized)
+train_vggface2_cluster.py  --  Iris on VGGFace2 (GPU Cluster/Multi-Host Optimized)
 ==============================================================================================
 
 This script is optimized for training on GPU clusters (e.g., SLURM, multi-node, or multi-GPU environments).
@@ -37,7 +37,7 @@ import orbax.checkpoint as ocp
 from tqdm import tqdm
 
 # ─── local ────────────────────────────────────────────────────────────────────
-from model import FaceLiVTv2Lite, count_params, estimate_int8_size_mb
+from model import Iris, count_params, estimate_int8_size_mb
 from losses import AdaFaceLoss, ArcFaceLoss
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -354,11 +354,11 @@ def init_train_state(
     steps_per_epoch: int,
     global_batch_size: int,
     key: jnp.ndarray,
-) -> Tuple[FaceTrainState, FaceLiVTv2Lite, nn.Module]:
+) -> Tuple[FaceTrainState, Iris, nn.Module]:
     k1, k2, k3 = jr.split(key, 3)
 
     # ── backbone ──
-    model = FaceLiVTv2Lite(
+    model = Iris(
         embedding_dim  = cfg.embedding_dim,
         drop_path_rate = cfg.drop_path_rate,
         use_remat      = cfg.use_remat,
@@ -844,7 +844,7 @@ def train(cfg: TrainConfig = CFG):
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train FaceLiVTv2-Lite on VGGFace2 (GPU Cluster optimized)")
+    parser = argparse.ArgumentParser(description="Train Iris on VGGFace2 (GPU Cluster optimized)")
     parser.add_argument("--dataset_name",   default=CFG.dataset_name)
     parser.add_argument("--image_dir",      default=CFG.image_dir,
                         help="Path to local folder containing extracted images (for text-only datasets like RichardErkhov/VGGFace2)")
