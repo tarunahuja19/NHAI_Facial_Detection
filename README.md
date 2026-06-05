@@ -205,10 +205,32 @@ If any log row is updated, deleted, or inserted out of order, the chain of hashe
 ### 📸 Application Interface Screenshots
 
 
-| 📱 1. Enrollment Screen | 🔐 2. Biometric Verification | 🚀 3. Sync Status |
-|:---:|:---:|:---:|
-| ![Enrollment Screen Placeholder](https://via.placeholder.com/250x500.png?text=Enrollment+Screen) | ![Verification Screen Placeholder](https://via.placeholder.com/250x500.png?text=Liveness+%26+Verification) | ![Sync Status Placeholder](https://via.placeholder.com/250x500.png?text=Database+Sync+Ledger) |
+### 📸 Application Interface Screenshots
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/bdff7297-bdbf-48e8-b020-94b8917d0c1f" width="220" alt="Enrollment Screen"/>
+  <img src="https://github.com/user-attachments/assets/07bd720f-48f8-4ccc-80d8-2a956f50643b" width="220" alt="Biometric Verification"/>
+  <img src="https://github.com/user-attachments/assets/934d53de-f944-48ea-bec6-134ff681209e" width="220" alt="Sync Status"/>
+</p>
+
+<p align="center">
+  <b>📱 Enrollment</b>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <b>🔐 Verification</b>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <b>🚀 Sync Status</b>
+</p>
+
+---
+### ✨ Key Features Demonstrated
+
+- 👷 Worker Enrollment & Management
+- 🧠 Face Recognition-Based Verification
+- 📡 Offline-First Data Collection
+- 🔄 PostgreSQL Database Synchronization
+- 📊 Sync Status & Upload History Tracking
+- 🔐 Secure Authentication & Attendance Logging
+## 🚦 Quick Start for Developers
 ---
 
 ## 🚦 Quick Start for Developers
