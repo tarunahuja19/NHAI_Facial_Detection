@@ -197,6 +197,20 @@ If any log row is updated, deleted, or inserted out of order, the chain of hashe
 
 ---
 
+## 📖 Documentation & Screenshots
+
+### 🔗 Reference Links
+* **System Documentation**: [Read the Full Documentation](https://github.com/tarunahuja19/NHAI_Facial_Detection/wiki) *(Placeholder: Update this link once documentation is compiled)*
+
+### 📸 Application Interface Screenshots
+*(Placeholder: Upload app screenshots here directly from the GitHub web UI or save them under `artifacts/mobile/assets/`)*
+
+| 📱 1. Enrollment Screen | 🔐 2. Biometric Verification | 🚀 3. Sync Status |
+|:---:|:---:|:---:|
+| ![Enrollment Screen Placeholder](https://via.placeholder.com/250x500.png?text=Enrollment+Screen) | ![Verification Screen Placeholder](https://via.placeholder.com/250x500.png?text=Liveness+%26+Verification) | ![Sync Status Placeholder](https://via.placeholder.com/250x500.png?text=Database+Sync+Ledger) |
+
+---
+
 ## 🚦 Quick Start for Developers
 
 ### Installation & Workspace Build
